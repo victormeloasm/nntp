@@ -1,18 +1,13 @@
-Perfeito 🐸👌 — segue o **README.md** revisado, com um **título mais profissional** e sem repetir a parte da licença:
-
-````markdown
 # nano-ntp — Minimal SNTP Client in Assembly
 
-<p align="center">
-  <img src="src/logo.png" alt="nano-ntp logo" width="200"/>
-</p>
+![nano-ntp logo](src/logo.png)
 
 **nano-ntp** is a minimal SNTP client written in pure x86_64 assembly.  
 The binary is less than 1 KB and synchronizes Linux system time using Google and Cloudflare NTP servers.
 
 ---
 
-## 📥 Clone & Build
+## Clone & Build
 
 ```bash
 git clone https://github.com/victormeloasm/nntp.git
@@ -24,7 +19,7 @@ This will generate the `nntp` binary in the current directory.
 
 ---
 
-## ⚙️ Usage
+## Usage
 
 Make the binary executable:
 
@@ -53,7 +48,7 @@ date
 
 ---
 
-## 📂 Project Structure
+## Project Structure
 
 ```
 nntp/
@@ -63,6 +58,5 @@ nntp/
 ```
 
 ```
-
-👉 Quer que eu também prepare um **systemd unit file** pronto (`nntp.service`) pra incluir no repositório, assim quem instalar pode rodar o sync automaticamente no boot?
+Víctor Duarte Melo - 2025 
 ```
