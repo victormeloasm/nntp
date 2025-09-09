@@ -1,4 +1,4 @@
-# nano-ntp — Minimal SNTP Client in Assembly
+# nano-ntp — Minimal SNTP Client in Flat Assembly
 
 ![nano-ntp logo](src/logo.png)
 
