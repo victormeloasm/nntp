@@ -45,6 +45,11 @@ Check the new system time:
 ```bash
 date
 ```
+## Download
+
+You can download the latest prebuilt binary here:
+
+[**⬇️ Download nano-ntp v1.0 (ZIP)**](https://github.com/victormeloasm/nntp/releases/download/v1.0/nntp.zip)
 
 ---
 
