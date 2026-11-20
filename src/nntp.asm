@@ -1,126 +1,106 @@
-; nntp.asm — nano-ntp: SNTP mínimo (sem debug)
-; Montar:  fasm nntp.asm
-; Rodar:   sudo ./nntp   (ou: sudo setcap cap_sys_time=+ep ./nntp && ./nntp)
-
+; nano-ntp v2 -- x86-64 Linux SNTP, no libc, no DNS, two servers.
+; FASM: fasm nntp.asm nntp
+;           Keep this program inside a trusted environment: the time is set
+;           from unauthenticated NTP data (no NTS and no RTT correction).
+; Optimizations: one sockaddr rewritten on fallback, stack RX buffer,
+;                shared timeval/timespec storage, connected UDP socket.
 format ELF64 executable 3
 entry start
-
 segment readable executable writeable
 
-; ---- syscalls / const ----
-SYS_socket        = 41
-SYS_setsockopt    = 54
-SYS_sendto        = 44
-SYS_recvfrom      = 45
-SYS_clock_settime = 227
-SYS_exit          = 60
+server:
+    dw 2, 0x7B00                   ; AF_INET, port 123 network order
+    dd 0x0023EFD8                  ; Google 216.239.35.0
+    dq 0
+request:
+    db 0x23                        ; LI=0, VN=4, Mode=3
+    rb 47
 
-AF_INET = 2
-SOCK_DGRAM = 2
-IPPROTO_UDP = 17
-SOL_SOCKET  = 1
-SO_RCVTIMEO = 20
-CLOCK_REALTIME = 0
-NTP_DELTA = 2208988800
-
-; ---- dados ----
-; sockaddr_in (16B cada): u16 family; u16 port (BE); u32 addr (BE); u8 zero[8]
-socklist:
-  ; Google NTP (216.239.35.0)
-  dw AF_INET, 0x7B00
-  dd 0x0023EFD8
-  dq 0
-  ; Cloudflare NTP (162.159.200.1)
-  dw AF_INET, 0x7B00
-  dd 0x01C89FA2
-  dq 0
-srvcount: db 2
-
-; request 48B (LI=0, VN=4, Mode=3)
-txpkt: db 0x23
-       rb 47
-
-rxpkt: rb 48        ; resposta
-tv:    dq 1, 0      ; timeval {1s,0}
-ts:    dq 0, 0      ; timespec {sec,nsec}
-
-; ---- código ----
 start:
-  ; socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
-  mov eax, SYS_socket
-  mov edi, AF_INET
-  mov esi, SOCK_DGRAM
-  mov edx, IPPROTO_UDP
-  syscall
-  mov r12, rax
+    push 41                         ; socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
+    pop rax
+    push 2
+    pop rdi
+    push 2
+    pop rsi
+    push 17
+    pop rdx
+    syscall
+    test eax, eax
+    js fatal
+    mov ebx, eax                    ; socket fd, preserved by SYSCALL
 
-  ; setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, 16)
-  mov eax, SYS_setsockopt
-  mov edi, r12d
-  mov esi, SOL_SOCKET
-  mov edx, SO_RCVTIMEO
-  mov r10, tv
-  mov r8d, 16
-  syscall
+    push 0                          ; timeval (sec=1, usec=0)
+    push 1
+    sub rsp, 48                     ; receive buffer + timeval/timespec
 
-  xor ecx, ecx
-  movzx edx, byte [srvcount]
+    mov eax, 54                     ; setsockopt(SO_RCVTIMEO, 1s)
+    mov edi, ebx
+    push 1
+    pop rsi                         ; SOL_SOCKET
+    mov edx, 20                     ; SO_RCVTIMEO
+    lea r10, [rsp+48]
+    mov r8d, 16
+    syscall
+    test eax, eax
+    js fatal
 
-.try_server:
-  cmp ecx, edx
-  jae .fail_all
+    mov r12d, 1                     ; one fallback attempt remaining
+.retry:
+    mov eax, 42                     ; connect(UDP socket, server, 16)
+    mov edi, ebx
+    mov rsi, server
+    push 16
+    pop rdx
+    syscall
+    test eax, eax
+    js .fallback
 
-  ; ptr = &socklist[idx] (cada item = 16B)
-  mov rbx, socklist
-  mov r8, rcx
-  shl r8, 4
-  add r8, rbx
+    push 1                          ; write(fd, request, 48)
+    pop rax
+    mov rsi, request
+    mov edx, 48
+    syscall
+    cmp eax, 48
+    jne .fallback
 
-  ; sendto(fd, txpkt, 48, 0, ptr, 16)
-  mov eax, SYS_sendto
-  mov edi, r12d
-  mov rsi, txpkt
-  mov edx, 48
-  xor r10d, r10d
-  mov r9d, 16
-  syscall
+    xor eax, eax                    ; read(fd, rsp, 48)
+    mov rsi, rsp
+    syscall
+    cmp eax, 48
+    jne .fallback
 
-  ; recvfrom(fd, rxpkt, 48, 0, NULL, NULL)
-  mov eax, SYS_recvfrom
-  mov edi, r12d
-  mov rsi, rxpkt
-  mov edx, 48
-  xor r10d, r10d
-  xor r8d,  r8d
-  xor r9d,  r9d
-  syscall
-  cmp eax, 48
-  jl .next_server
+    mov al, [rsp]
+    and al, 7                       ; reply must be NTP server mode (4)
+    cmp al, 4
+    jne .fallback
+    cmp byte [rsp+1], 0             ; reject Kiss-o'-Death / invalid stratum
+    je .fallback
 
-  ; unix = be32(rx[40..43]) - 2208988800
-  mov eax, [rxpkt+40]
-  bswap eax
-  sub eax, NTP_DELTA
-  mov [ts], rax
-  xor eax, eax
-  mov [ts+8], rax
+    mov eax, [rsp+40]               ; server TX timestamp seconds (network BE)
+    bswap eax
+    sub eax, 2208988800            ; NTP epoch -> Unix epoch
+    movsxd rax, eax                 ; signed time_t for pre-1970 dates
+    mov [rsp+48], rax               ; tv_sec, tv_nsec still zero
 
-  ; clock_settime(CLOCK_REALTIME, &ts)
-  mov eax, SYS_clock_settime
-  mov edi, CLOCK_REALTIME
-  mov rsi, ts
-  syscall
+    mov eax, 227                    ; clock_settime(CLOCK_REALTIME,...)
+    xor edi, edi
+    lea rsi, [rsp+48]
+    syscall
+    neg eax                         ; 0 on success, errno on failure
+    mov edi, eax
+    jmp finish
 
-  ; exit(0)
-  mov eax, SYS_exit
-  xor edi, edi
-  syscall
+.fallback:
+    dec r12d                        ; fallback counter survives SYSCALL
+    js fatal
+    mov dword [server+4], 0x01C89FA2 ; Cloudflare 162.159.200.1
+    jmp .retry
 
-.next_server:
-  inc ecx
-  jmp .try_server
-
-.fail_all:
-  mov eax, SYS_exit
-  mov edi, 1
-  syscall
+fatal:
+    push 1
+    pop rdi
+finish:
+    push 60                         ; exit(status)
+    pop rax
+    syscall
